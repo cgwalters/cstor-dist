@@ -1,4 +1,4 @@
-# ocidist-regproxy
+# cstor-dist
 
 This project exposes a [`containers-storage:`](https://github.com/containers/storage)
 as used by e.g. [podman](https://github.com/containers/podman) via the standard
@@ -13,6 +13,11 @@ The registry is read-only.
   host container storage.
 
 ## Running
+
+While this project can also run outside of a container, it currently requires
+a patched skopeo, so it's most convenient to use from a container.
+
+There is a pre built image (x86_64 only) at `ghcr.io/cgwalters/cstor-dist`.
 
 ### Bind mounting container storage
 
@@ -34,7 +39,7 @@ The container listens on port 8000; you can expose this on whatever port you lik
 ### Example
 
 ```
-$ podman run --name regproxy --privileged --rm -d -p 8000:8000 -v ~/.local/share/containers/storage/:/var/lib/containers/storage ghcr.io/cgwalters/ocidist-localproxy:latest
+$ podman run --name regproxy --privileged --rm -d -p 8000:8000 -v ~/.local/share/containers/storage/:/var/lib/containers/storage ghcr.io/cgwalters/cstor-dist:latest
 ```
 
 ## Accessing the registry
@@ -43,3 +48,7 @@ Note that unless you go to extra effort, the server will not speak TLS.
 For example with `skopeo` you must use e.g. `--src-tls-verify=false`.
 
 Example: `skopeo copy --src-tls-verify=false docker://127.0.0.1:8000/quay.io/fedora/fedora:latest oci:/tmp/foo.oci`
+
+## Building from source
+
+Clone the git repository and do a podman/docker build.

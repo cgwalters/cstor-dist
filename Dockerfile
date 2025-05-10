@@ -49,5 +49,5 @@ COPY --from=build-skopeo /out/ /
 COPY --from=build /out/ /
 # This is the default port
 EXPOSE 8000
-CMD ["/usr/bin/ocidist-localproxy"]
+CMD ["/usr/bin/cstor-dist"]
 

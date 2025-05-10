@@ -38,6 +38,7 @@ jobs:
         run: podman login --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} ${{ env.REGISTRY }}
       - name: Build Image
         id: build
-        run: podman build -t ${{ env.REGISTRY }}/cgwalters/ocidist-localproxy .
+        run: podman build -t ${{ env.REGISTRY }}/cgwalters/cstor-dist .
       - name: Push
-        run: podman push ${{ env.REGISTRY }}/cgwalters/ocidist-localproxy
+        run: podman push ${{ env.REGISTRY }}/cgwalters/cstor-dist
+

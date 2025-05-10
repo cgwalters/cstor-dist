@@ -348,6 +348,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
+name = "cstor-dist"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "cap-std-ext",
+ "chrono",
+ "clap",
+ "color-eyre",
+ "containers-image-proxy",
+ "data-encoding",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "indoc",
+ "serde",
+ "serde_json",
+ "similar-asserts",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-error",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -903,32 +929,6 @@ dependencies = [
  "strum",
  "strum_macros",
  "thiserror 2.0.12",
-]
-
-[[package]]
-name = "ocidist-localproxy"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "cap-std-ext",
- "chrono",
- "clap",
- "color-eyre",
- "containers-image-proxy",
- "data-encoding",
- "futures-util",
- "http-body-util",
- "hyper",
- "hyper-util",
- "indoc",
- "serde",
- "serde_json",
- "similar-asserts",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-error",
- "tracing-subscriber",
 ]
 
 [[package]]
