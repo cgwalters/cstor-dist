@@ -1,0 +1,31 @@
+[package]
+name = "ocidist-localproxy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.0"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+bytes = "1.10"
+cap-std-ext = { version = "4" }
+chrono = { version = "0.4", features = ["serde"] }
+color-eyre = { version = "0.6" }
+clap = { version = "4.4", features = ["derive"] }
+data-encoding = { version = "2.9" }
+futures-util = { version = "0.3.16", default-features = false }
+http-body-util = "0.1"
+#containers-image-proxy = { version = "0.7" }
+containers-image-proxy = { path = "../../containers/containers-image-proxy-rs" }
+serde = "1.0.199"
+serde_json = "1.0.116"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tracing-error = "0.2"
+hyper = { version = "1.6", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1.11", features = ["http2", "tokio", "server"] }
+indoc = "2.0.6"
+
+[dev-dependencies]
+similar-asserts = "1.5"
