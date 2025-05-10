@@ -68,6 +68,7 @@ fn internal_server_error(e: Report) -> Response<BoxBody<Bytes, Report>> {
         .unwrap()
 }
 
+/// Cache based on a fetched manifest
 #[derive(Debug)]
 struct OpenedState {
     repo: String,
@@ -75,10 +76,17 @@ struct OpenedState {
     raw_manifest: Vec<u8>,
 }
 
+/// State held per client. We cache the manifest information
+/// and the open image reference. This assumes each caller
+/// only fetches one image per connection currently and is also
+/// not doing concurrent fetches.
 #[derive(Debug)]
 struct State {
+    /// Global id for state allocation just for debugging
     id: u64,
+    /// One image proxy per client; we could share them but eh.
     proxy: containers_image_proxy::ImageProxy,
+    /// Open image state, initialized in manifest fetch
     opened_image: OnceCell<OpenedState>,
 }
 
@@ -91,32 +99,37 @@ async fn main() -> Result<(), Report> {
 
     let args = Args::parse();
     // tokio listener loop on args.port
-    let addr = format!("127.0.0.1:{}", args.port);
+    let addr = format!("::0:{}", args.port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .wrap_err_with(|| format!("Failed to bind to {}", addr))?;
 
     info!("Listening on {}", addr);
 
+    // Global counter for state allocations
     let stateid = AtomicU64::new(0);
 
+    // Endless loop serving clients
     loop {
         let (stream, addr) = listener.accept().await?;
         // Use an adapter to access something implementing `tokio::io` traits as if they implement
         // `hyper::rt` IO traits.
         let io = TokioIo::new(stream);
 
+        // Alloc state for this client
         let state = State {
             id: stateid.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             proxy: containers_image_proxy::ImageProxy::new().await?,
             opened_image: Default::default(),
         };
+        // This span wires up tracing
         let span = tracing::span!(
             Level::DEBUG,
             "client",
             addr = addr.to_string(),
             state = state.id
         );
+        // Spawn an async worker
         let state = Arc::new(Mutex::new(state));
         let service = service_fn(move |req| response(Arc::clone(&state), req));
         tokio::task::spawn(
@@ -154,6 +167,7 @@ fn install_tracing() {
         .init();
 }
 
+/// HTTP response for an OCI manifest
 fn response_for_raw_manifest(manifest: &[u8]) -> Response<BoxBody<Bytes, Report>> {
     Response::builder()
         .status(StatusCode::OK)
@@ -170,6 +184,7 @@ fn response_for_raw_manifest(manifest: &[u8]) -> Response<BoxBody<Bytes, Report>
         .unwrap()
 }
 
+/// Implementation of manifest fetching
 #[instrument(skip(state))]
 async fn get_manifest(
     state: Arc<Mutex<State>>,
@@ -215,6 +230,7 @@ async fn get_manifest(
     Ok(resp)
 }
 
+/// Implementation of blob fetching
 #[instrument(skip(state))]
 async fn get_blob(
     state: Arc<Mutex<State>>,
@@ -252,6 +268,7 @@ async fn get_blob(
     Ok(resp.body(boxed_body).unwrap())
 }
 
+/// Core HTTP handler
 async fn impl_response(
     proxy: Arc<Mutex<State>>,
     req: Request<hyper::body::Incoming>,
@@ -288,6 +305,8 @@ async fn impl_response(
         Err(e) => internal_server_error(e),
     }
 }
+
+/// Wrapper for primary entrypoint
 async fn response(
     proxy: Arc<Mutex<State>>,
     req: Request<hyper::body::Incoming>,

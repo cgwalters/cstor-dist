@@ -1,0 +1,4 @@
+# Skopeo runtime deps
+containers-common
+crun
+yajl

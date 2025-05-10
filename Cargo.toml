@@ -1,8 +1,8 @@
 [package]
 name = "ocidist-localproxy"
 version = "0.1.0"
-edition = "2024"
-rust-version = "1.85.0"
+edition = "2021"
+rust-version = "1.70.0"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
@@ -15,7 +15,7 @@ data-encoding = { version = "2.9" }
 futures-util = { version = "0.3.16", default-features = false }
 http-body-util = "0.1"
 #containers-image-proxy = { version = "0.7" }
-containers-image-proxy = { path = "../../containers/containers-image-proxy-rs" }
+containers-image-proxy = { git = "https://github.com/cgwalters/containers-image-proxy-rs", branch = "get-raw-blob" }
 serde = "1.0.199"
 serde_json = "1.0.116"
 tokio = { version = "1", features = ["full"] }

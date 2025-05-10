@@ -1,0 +1,43 @@
+name: Build
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+# Cancel in progress jobs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      # https://github.com/orgs/community/discussions/25678
+      - name: Delete huge unnecessary tools folder
+        run: sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android /opt/ghc
+ 
+      - name: Get a newer podman for heredoc support (from debian testing)
+        run: |
+          set -eux
+          echo 'deb [trusted=yes] https://ftp.debian.org/debian/ testing main' | sudo tee /etc/apt/sources.list.d/testing.list
+          sudo apt update
+          sudo apt install -y crun/testing podman/testing skopeo/testing
+          sudo rm /var/lib/containers -rf
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Login
+        run: podman login --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} ${{ env.REGISTRY }}
+      - name: Build Image
+        id: build
+        run: podman build -t ${{ env.REGISTRY }}/cgwalters/ocidist-localproxy .
+      - name: Push
+        run: podman push ${{ env.REGISTRY }}/cgwalters/ocidist-localproxy
