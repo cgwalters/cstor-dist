@@ -1,14 +1,15 @@
-use std::cell::OnceCell;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use clap::Parser;
 use color_eyre::eyre::eyre;
 use color_eyre::{eyre::Report, eyre::WrapErr, Result};
-use containers_image_proxy::oci_spec;
 use containers_image_proxy::oci_spec::image::{Descriptor, ImageManifest};
+use containers_image_proxy::{oci_spec, OpenedImage};
 use futures_util::TryStreamExt as _;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt as _, Full, StreamBody};
@@ -68,12 +69,91 @@ fn internal_server_error(e: Report) -> Response<BoxBody<Bytes, Report>> {
         .unwrap()
 }
 
-/// Cache based on a fetched manifest
 #[derive(Debug)]
-struct OpenedState {
-    repo: String,
-    oi: containers_image_proxy::OpenedImage,
+struct CachedManifest {
+    /// Image repository
+    repository: String,
+    /// Refernence to the open image
+    open_image: OpenedImage,
+    /// Digest of the manifest
+    digest: String,
+    /// Raw version
     raw_manifest: Vec<u8>,
+    /// The manifest itself
+    #[allow(dead_code)]
+    manifest: ImageManifest,
+}
+
+/// Cache of fetched manifests
+#[derive(Debug)]
+struct Globals {
+    manifests: Arc<Mutex<BTreeMap<Instant, Arc<CachedManifest>>>>,
+    proxy: Arc<Mutex<containers_image_proxy::ImageProxy>>,
+}
+
+impl Globals {
+    const TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+    /// Insert cached data for `repository`.
+    async fn insert(&self, cached: Arc<CachedManifest>) {
+        // SAFETY: Propagate poison
+        let mut lock = self.manifests.lock().await;
+        let expiration = Instant::now() + Self::TIMEOUT;
+        lock.insert(expiration, cached);
+    }
+
+    /// Find cached data for `repository`.
+    async fn lookup(&self, repository: &str) -> Option<Arc<CachedManifest>> {
+        // SAFETY: Propagate poison
+        let mut lock = self.manifests.lock().await;
+        let mut found = None;
+        for (k, v) in lock.iter() {
+            if v.repository == repository {
+                found = Some(*k);
+                break;
+            }
+        }
+        if let Some(found) = found {
+            // Prepare to return a cheap refcounted version of what we found
+            let cached = lock.remove(&found).unwrap();
+            // Re-insert it back into the cache with a bumped timeout
+            lock.insert(Instant::now() + Self::TIMEOUT, Arc::clone(&cached));
+            Some(cached)
+        } else {
+            None
+        }
+    }
+
+    /// Return a future which acts as a polling loop to prune unused data
+    async fn prune_loop(&self) {
+        loop {
+            // SAFETY: Propagate poison
+            let mut lock = self.manifests.lock().await;
+            let now = Instant::now();
+            // We could optimize this with a wakeup on first insert, but polling once every
+            // 10 minutes isn't terrible.
+            let mut expiration = now + Self::TIMEOUT;
+            while let Some((timeout, cached)) = lock.pop_first() {
+                if timeout > now {
+                    lock.insert(timeout, cached);
+                    expiration = timeout.clone();
+                    break;
+                }
+                tracing::debug!("Pruning manifest {}", cached.digest);
+            }
+            drop(lock);
+            tokio::time::sleep_until(expiration.into()).await;
+        }
+    }
+
+    async fn new() -> Result<Self> {
+        let proxy = containers_image_proxy::ImageProxy::new().await?;
+        let r = Self {
+            manifests: Arc::new(Default::default()),
+            proxy: Arc::new(Mutex::new(proxy)),
+        };
+        Ok(r)
+    }
 }
 
 /// State held per client. We cache the manifest information
@@ -84,10 +164,8 @@ struct OpenedState {
 struct State {
     /// Global id for state allocation just for debugging
     id: u64,
-    /// One image proxy per client; we could share them but eh.
-    proxy: containers_image_proxy::ImageProxy,
-    /// Open image state, initialized in manifest fetch
-    opened_image: OnceCell<OpenedState>,
+    /// Our ref to the global state
+    globals: Arc<Globals>,
 }
 
 #[instrument]
@@ -108,6 +186,11 @@ async fn main() -> Result<(), Report> {
 
     // Global counter for state allocations
     let stateid = AtomicU64::new(0);
+    let globals = Arc::new(Globals::new().await?);
+    {
+        let globals = Arc::clone(&globals);
+        tokio::spawn(async move { globals.prune_loop().await });
+    }
 
     // Endless loop serving clients
     loop {
@@ -119,8 +202,7 @@ async fn main() -> Result<(), Report> {
         // Alloc state for this client
         let state = State {
             id: stateid.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            proxy: containers_image_proxy::ImageProxy::new().await?,
-            opened_image: Default::default(),
+            globals: Arc::clone(&globals),
         };
         // This span wires up tracing
         let span = tracing::span!(
@@ -194,24 +276,26 @@ async fn get_manifest(
     let repo = format!("{}/{}", reference.registry(), reference.repository());
     let cstorage_reference = &format!("containers-storage:{reference}");
     let state = state.lock().await;
-    if let Some(oi) = state.opened_image.get() {
+    let globals = &state.globals;
+    if let Some(cached) = globals.lookup(&repo).await {
         tracing::trace!("already have opened image");
-        return Ok(response_for_raw_manifest(oi.raw_manifest.as_slice()));
-    }
+        return Ok(response_for_raw_manifest(cached.raw_manifest.as_slice()));
+    };
     tracing::debug!("opening");
-    let oi = state.proxy.open_image_optional(&cstorage_reference).await?;
+    let proxy = globals.proxy.lock().await;
+    let oi = proxy.open_image_optional(&cstorage_reference).await?;
     let Some(oi) = oi else {
         return Ok(not_found());
     };
-    let (_digest, raw_manifest) = state.proxy.fetch_manifest_raw_oci(&oi).await?;
+    let (digest, raw_manifest) = proxy.fetch_manifest_raw_oci(&oi).await?;
     tracing::debug!("Fetched manifest ({} bytes)", raw_manifest.len());
     let mut manifest: ImageManifest =
         serde_json::from_slice(&raw_manifest).with_context(|| format!("Parsing manifest"))?;
-    let layers_for_copy = state
-        .proxy
+    let layers_for_copy = proxy
         .get_layer_info(&oi)
         .await?
         .ok_or_else(|| eyre!("Expected layerinfo when operating on containers-storage:"))?;
+    drop(proxy);
     // Override with the uncompressed layers
     manifest.set_layers(
         layers_for_copy
@@ -220,13 +304,15 @@ async fn get_manifest(
             .collect(),
     );
     let raw_manifest = serde_json::to_vec(&manifest).context("Serializing manifest")?;
-    let ostate = OpenedState {
-        repo: repo.to_string(),
-        oi,
+    let cached = Arc::new(CachedManifest {
+        repository: repo.to_string(),
+        open_image: oi,
+        digest: digest.to_string(),
         raw_manifest,
-    };
-    let resp = response_for_raw_manifest(&ostate.raw_manifest);
-    let _ = state.opened_image.set(ostate);
+        manifest,
+    });
+    globals.insert(cached.clone()).await;
+    let resp = response_for_raw_manifest(&cached.raw_manifest);
     Ok(resp)
 }
 
@@ -238,24 +324,17 @@ async fn get_blob(
     blobid: &str,
 ) -> Result<Response<BoxBody<Bytes, Report>>> {
     let state = state.lock().await;
-    let ostate = state
-        .opened_image
-        .get()
-        .ok_or_else(|| eyre!("Must fetch manifest before body"))?;
-    if ostate.repo != repository {
-        tracing::debug!("Repository mismatch");
+    let globals = &state.globals;
+    let Some(cached) = globals.lookup(&repository).await else {
         return Err(eyre!(
-            "Repository mismatch, expected={} provided={}",
-            ostate.repo,
-            repository
+            "Failed to find repository in manifest cache: {repository}",
         ));
-    }
-    let oi = &ostate.oi;
+    };
     let digest = &Digest::from_str(blobid).context("Parsing digest")?;
     let _span = span!(Level::DEBUG, "Fetching blob");
-    let (blobsize, fd) = state
-        .proxy
-        .get_raw_blob(oi, digest)
+    let proxy = globals.proxy.lock().await;
+    let (blobsize, fd) = proxy
+        .get_raw_blob(&cached.open_image, digest)
         .await
         .context("Invoking GetRawBlob")?;
     tracing::debug!("Fetched blob ({} bytes)", blobsize);
