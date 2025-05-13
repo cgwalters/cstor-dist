@@ -10,7 +10,8 @@ The registry is read-only.
 ## Use cases
 
 - Have local virtual machines be able to easily fetch content from the
-  host container storage.
+  host container storage. This is a general use case but is *especially*
+  useful with [bootc](https://github.com/bootc-dev/bootc/); see below.
 
 ## Running
 
@@ -52,3 +53,22 @@ Example: `skopeo copy --src-tls-verify=false docker://127.0.0.1:8000/quay.io/fed
 ## Building from source
 
 Clone the git repository and do a podman/docker build.
+
+
+## Example use with bootc
+
+Commonly when using containers via podman/docker in a build/test loop,
+one runs them on the same machine as has the build.
+
+Whereas with [bootc](https://github.com/bootc-dev/bootc/) by far
+the more common local development case is to build on one machine, and
+then test on another.
+
+For Linux host systems, this project works very well in combination
+with e.g. [Anaconda](https://docs.fedoraproject.org/en-US/bootc/bare-metal/#_using_anaconda).
+You will need to follow that documentation and create a kickstart which
+sets up the insecure registry.
+
+But what gets *even better* is that then you can iterate on container
+builds in e.g. your regular podman unprivileged storage, and then efficiently just
+`bootc upgrade` without moving data around!
