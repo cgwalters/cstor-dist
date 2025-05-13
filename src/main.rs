@@ -76,7 +76,7 @@ struct CachedManifest {
     /// Refernence to the open image
     open_image: OpenedImage,
     /// Digest of the manifest
-    digest: String,
+    digest: Digest,
     /// Raw version
     raw_manifest: Vec<u8>,
     /// The manifest itself
@@ -92,7 +92,7 @@ struct Globals {
 }
 
 impl Globals {
-    const TIMEOUT: Duration = Duration::from_secs(10 * 60);
+    const TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Insert cached data for `repository`.
     async fn insert(&self, cached: Arc<CachedManifest>) {
@@ -102,13 +102,16 @@ impl Globals {
         lock.insert(expiration, cached);
     }
 
-    /// Find cached data for `repository`.
-    async fn lookup(&self, repository: &str) -> Option<Arc<CachedManifest>> {
+    /// Find the first cached manifest that matches
+    async fn lookup_by<F: Fn(&Arc<CachedManifest>) -> bool>(
+        &self,
+        f: F,
+    ) -> Option<Arc<CachedManifest>> {
         // SAFETY: Propagate poison
         let mut lock = self.manifests.lock().await;
         let mut found = None;
         for (k, v) in lock.iter() {
-            if v.repository == repository {
+            if f(v) {
                 found = Some(*k);
                 break;
             }
@@ -122,6 +125,16 @@ impl Globals {
         } else {
             None
         }
+    }
+
+    /// Find cached data for `repository`.
+    async fn lookup_repo(&self, repository: &str) -> Option<Arc<CachedManifest>> {
+        self.lookup_by(|v| v.repository == repository).await
+    }
+
+    /// Find a cached image by digest
+    async fn lookup_digest(&self, digest: &Digest) -> Option<Arc<CachedManifest>> {
+        self.lookup_by(|v| &v.digest == digest).await
     }
 
     /// Return a future which acts as a polling loop to prune unused data
@@ -140,6 +153,10 @@ impl Globals {
                     break;
                 }
                 tracing::debug!("Pruning manifest {}", cached.digest);
+                let proxy = self.proxy.lock().await;
+                if let Err(e) = proxy.close_image(&cached.open_image).await {
+                    tracing::error!("Failed to close image: {e}");
+                }
             }
             drop(lock);
             tokio::time::sleep_until(expiration.into()).await;
@@ -276,18 +293,18 @@ async fn get_manifest(
     let repo = format!("{}/{}", reference.registry(), reference.repository());
     let cstorage_reference = &format!("containers-storage:{reference}");
     let state = state.lock().await;
-    let globals = &state.globals;
-    if let Some(cached) = globals.lookup(&repo).await {
-        tracing::trace!("already have opened image");
-        return Ok(response_for_raw_manifest(cached.raw_manifest.as_slice()));
-    };
     tracing::debug!("opening");
-    let proxy = globals.proxy.lock().await;
+    let proxy = state.globals.proxy.lock().await;
     let oi = proxy.open_image_optional(&cstorage_reference).await?;
     let Some(oi) = oi else {
         return Ok(not_found());
     };
     let (digest, raw_manifest) = proxy.fetch_manifest_raw_oci(&oi).await?;
+    let digest = Digest::from_str(&digest)?;
+    if let Some(cached) = state.globals.lookup_digest(&digest).await {
+        tracing::trace!("Already have cached image for {reference} with {digest}");
+        return Ok(response_for_raw_manifest(cached.raw_manifest.as_slice()));
+    };
     tracing::debug!("Fetched manifest ({} bytes)", raw_manifest.len());
     let mut manifest: ImageManifest =
         serde_json::from_slice(&raw_manifest).with_context(|| format!("Parsing manifest"))?;
@@ -307,11 +324,11 @@ async fn get_manifest(
     let cached = Arc::new(CachedManifest {
         repository: repo.to_string(),
         open_image: oi,
-        digest: digest.to_string(),
+        digest,
         raw_manifest,
         manifest,
     });
-    globals.insert(cached.clone()).await;
+    state.globals.insert(cached.clone()).await;
     let resp = response_for_raw_manifest(&cached.raw_manifest);
     Ok(resp)
 }
@@ -325,7 +342,7 @@ async fn get_blob(
 ) -> Result<Response<BoxBody<Bytes, Report>>> {
     let state = state.lock().await;
     let globals = &state.globals;
-    let Some(cached) = globals.lookup(&repository).await else {
+    let Some(cached) = globals.lookup_repo(&repository).await else {
         return Err(eyre!(
             "Failed to find repository in manifest cache: {repository}",
         ));
@@ -338,6 +355,7 @@ async fn get_blob(
         .await
         .context("Invoking GetRawBlob")?;
     tracing::debug!("Fetched blob ({} bytes)", blobsize);
+    drop(proxy);
     let resp = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_LENGTH, blobsize.to_string());
