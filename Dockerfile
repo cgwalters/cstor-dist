@@ -13,7 +13,7 @@ grep -vE -e '^#' /src/dependencies.txt | xargs dnf -y download --arch=$(arch)
 # Install skopeo build deps
 dnf -y install golang make git-core 'pkgconfig(gpgme)'
 EORUN
-RUN git clone --depth=1 https://github.com/cgwalters/skopeo -b get-raw-blob
+RUN git clone --depth=1 https://github.com/containers/skopeo
 RUN <<EORUN
 set -xeuo pipefail
 cd skopeo
