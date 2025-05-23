@@ -3,7 +3,10 @@ on:
   workflow_dispatch:
   push:
     branches:
+      # Build and push 'latest' for main branch
       - main
+    tags:
+      - '*' # Build and push tagged image for any tag
 
 # Cancel in progress jobs
 concurrency:
@@ -12,6 +15,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 permissions:
   contents: read
@@ -35,10 +39,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Login
+        # Use GITHUB_TOKEN to login to ghcr.io
         run: podman login --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} ${{ env.REGISTRY }}
+
+      - name: Set image tag
+        id: set_image_tag
+        run: |
+          TAG="latest" # Default tag for workflow_dispatch or other branches
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}" # Use tag name for tag push
+          fi
+          echo "IMAGE_TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "Building and pushing tag: ${TAG}"
+
       - name: Build Image
         id: build
-        run: podman build -t ${{ env.REGISTRY }}/cgwalters/cstor-dist .
+        run: podman build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} .
       - name: Push
-        run: podman push ${{ env.REGISTRY }}/cgwalters/cstor-dist
-
+        run: podman push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
