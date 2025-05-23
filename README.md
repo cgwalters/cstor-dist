@@ -1,74 +1,85 @@
 # cstor-dist
 
-This project exposes a [`containers-storage:`](https://github.com/containers/storage)
-as used by e.g. [podman](https://github.com/containers/podman) via the standard
-[OCI distribution spec](https://github.com/opencontainers/distribution-spec)
-AKA a registry.
+This project exposes [`containers-storage`](https://github.com/containers/storage) (as used by [podman](https://github.com/containers/podman)) via the standard [OCI distribution spec](https://github.com/opencontainers/distribution-spec) (also known as a container registry).
 
-The registry is read-only.
+The registry is read-only and provides a way to serve local container images over HTTP.
 
-## Use cases
+## Use Cases
 
-- Have local virtual machines be able to easily fetch content from the
-  host container storage. This is a general use case but is *especially*
-  useful with [bootc](https://github.com/bootc-dev/bootc/); see below.
+- Enable local virtual machines to fetch content directly from the host's container storage
+- Particularly useful with [bootc](https://github.com/bootc-dev/bootc/) for local development workflows (see below)
 
-## Running
+## Running the Service
 
-While this project can also run outside of a container, it currently requires
-a patched skopeo, so it's most convenient to use from a container.
+While this project can run outside of a container, it currently requires a patched version of skopeo. Therefore, running it as a container is recommended.
 
-There is a pre built image (x86_64 only) at `ghcr.io/cgwalters/cstor-dist`.
+A pre-built container image is available for x86_64; see below.
 
-### Bind mounting container storage
+### Requirements
 
-You need to bind mount wherever your host container storage is into `/var/lib/containers/storage`
-in the container. For example with rootless podman, that's `~/.local/share/containers/storage`.
+#### Storage Configuration
 
-For rootful podman, it's the same `/var/lib/containers/storage`.
+You must bind mount your host's container storage into `/var/lib/containers/storage` in the container:
 
-### Privileges
+- For rootless podman: `~/.local/share/containers/storage`
+- For rootful podman: `/var/lib/containers/storage`
 
-Because this command requires write access to the storage in order to perform
-locking (for bad reasons, this will be fixed) *and* to handle SELinux labeling,
-this container requires `--privileged`.
+#### Privileges
 
-### Port mapping
+The container requires `--privileged` mode for two reasons:
+- Write access to storage for locking (this requirement will be removed in a future update)
+- SELinux labeling support
 
-The container listens on port 8000; you can expose this on whatever port you like.
+#### Network Configuration
 
-### Example
+The service listens on port 8000 by default. You can map this to any desired host port.
 
+### Example Usage
+
+Start the registry proxy:
+```bash
+podman run --name regproxy --privileged --rm -d \
+    -p 8000:8000 \
+    -v ~/.local/share/containers/storage/:/var/lib/containers/storage \
+    ghcr.io/cgwalters/cstor-dist:latest
 ```
-$ podman run --name regproxy --privileged --rm -d -p 8000:8000 -v ~/.local/share/containers/storage/:/var/lib/containers/storage ghcr.io/cgwalters/cstor-dist:latest
+
+## Using the Registry
+
+**Important**: By default, the server does not use TLS. When using tools like `skopeo`, you must specify `--src-tls-verify=false`.
+
+Example of copying an image:
+```bash
+skopeo copy --src-tls-verify=false \
+    docker://127.0.0.1:8000/quay.io/fedora/fedora:latest \
+    oci:/tmp/foo.oci
 ```
 
-## Accessing the registry
+## Building from Source
 
-Note that unless you go to extra effort, the server will not speak TLS.
-For example with `skopeo` you must use e.g. `--src-tls-verify=false`.
+1. Clone the repository:
+```bash
+git clone https://github.com/cgwalters/cstor-dist.git
+cd cstor-dist
+```
 
-Example: `skopeo copy --src-tls-verify=false docker://127.0.0.1:8000/quay.io/fedora/fedora:latest oci:/tmp/foo.oci`
+2. Build using podman or docker:
+```bash
+podman build -t cstor-dist .
+```
 
-## Building from source
+## Integration with bootc
 
-Clone the git repository and do a podman/docker build.
+### Overview
 
+While containers are typically run on the same machine where they're built when using podman/docker, [bootc](https://github.com/bootc-dev/bootc/) is commonly used in a distributed setup where you build on one machine and test on another.
 
-## Example use with bootc
+This project works particularly well with [Anaconda](https://docs.fedoraproject.org/en-US/bootc/bare-metal/#_using_anaconda) on Linux host systems. You'll just
+need to point your `ostreecontainer` at the cstor-dist endpoint.
 
-Commonly when using containers via podman/docker in a build/test loop,
-one runs them on the same machine as has the build.
+### Efficient Development Workflow
 
-Whereas with [bootc](https://github.com/bootc-dev/bootc/) by far
-the more common local development case is to build on one machine, and
-then test on another.
+This enables a quicker iteration workflow:
 
-For Linux host systems, this project works very well in combination
-with e.g. [Anaconda](https://docs.fedoraproject.org/en-US/bootc/bare-metal/#_using_anaconda).
-You will need to follow that documentation and create a kickstart which
-sets up the insecure registry.
-
-But what gets *even better* is that then you can iterate on container
-builds in e.g. your regular podman unprivileged storage, and then efficiently just
-`bootc upgrade` without moving data around!
+1. Build containers in your regular unprivileged podman storage
+2. Use `bootc upgrade` to efficiently deploy changes without data transfer overhead
