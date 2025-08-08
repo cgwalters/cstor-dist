@@ -46,14 +46,24 @@ podman run --name regproxy --privileged --rm -d \
 
 ## Using the Registry
 
-**Important**: By default, the server does not use TLS. When using tools like `skopeo`, you must specify `--src-tls-verify=false`.
+**Important**: By default, the server does not use TLS. You can globally
+configure container tools (`skopeo`, `podman`, `bootc`) to automatically
+fall back to plain `http` via configuring [registries.conf](https://github.com/containers/image/blob/main/docs/containers-registries.conf.5.md):
 
-Example of copying an image:
-```bash
-skopeo copy --src-tls-verify=false \
-    docker://127.0.0.1:8000/quay.io/fedora/fedora:latest \
-    oci:/tmp/foo.oci
+Here's an example shell command to configure things for a development
+virtual machine where the gateway is hosting the `cstor-dist` service:
+
 ```
+$
+cat >/etc/containers/registries.conf.d/10-local-insecure.conf <<EOF
+[[registry]]
+location="$(ip -j route | jq -r '.[0].gateway'):8000"
+insecure=true
+EOF
+```
+
+For example when using qemu with user networking, the host IP address
+is commonly `10.0.2.2`. You can find the host gateway via the `route` command.
 
 ## Building from Source
 
