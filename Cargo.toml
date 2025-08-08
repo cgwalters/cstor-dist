@@ -14,8 +14,7 @@ clap = { version = "4.4", features = ["derive"] }
 data-encoding = { version = "2.9" }
 futures-util = { version = "0.3.16", default-features = false }
 http-body-util = "0.1"
-#containers-image-proxy = { version = "0.7" }
-containers-image-proxy = { git = "https://github.com/cgwalters/containers-image-proxy-rs", branch = "get-raw-blob" }
+containers-image-proxy = "0.8"
 serde = "1.0.199"
 serde_json = "1.0.116"
 tokio = { version = "1", features = ["full"] }

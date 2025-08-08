@@ -10,7 +10,7 @@ use color_eyre::eyre::eyre;
 use color_eyre::{eyre::Report, eyre::WrapErr, Result};
 use containers_image_proxy::oci_spec::image::{Descriptor, ImageManifest};
 use containers_image_proxy::{oci_spec, OpenedImage};
-use futures_util::TryStreamExt as _;
+use futures_util::{StreamExt, TryStreamExt as _};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt as _, Full, StreamBody};
 use hyper::body::Frame;
@@ -350,18 +350,47 @@ async fn get_blob(
     let digest = &Digest::from_str(blobid).context("Parsing digest")?;
     let _span = span!(Level::DEBUG, "Fetching blob");
     let proxy = globals.proxy.lock().await;
-    let (blobsize, fd) = proxy
+    let (blobsize, fd, error_future) = proxy
         .get_raw_blob(&cached.open_image, digest)
         .await
         .context("Invoking GetRawBlob")?;
     tracing::debug!("Fetched blob ({} bytes)", blobsize);
+
+    let mut stream = ReaderStream::new(fd).map_err(|e| eyre!(e));
+    // We can't sanely report an error in the middle of a read back to the HTTP client.
+    // So for now, race to see whether we get an error or data from the proxy.
+    // In many networking cases, we will get an error before we see any data at least.
+    let first_chunk = tokio::select! {
+        err = error_future => {
+            if let Err(e) = err {
+                return Ok(internal_server_error(e.into()));
+            }
+            // No error, so return the first chunk
+            stream.next().await
+        }
+        read_result = (&mut stream).next() => { read_result }
+    };
+
+    // At this point we can unlock the mutex on the proxy, allowing further
+    // concurrent requests. What we keep now is just the file descriptor,
+    // from which we continue reading.
     drop(proxy);
+    drop(state);
+
     let resp = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_LENGTH, blobsize.to_string());
-    let reader_stream = ReaderStream::new(fd).map_err(|e| eyre!(e));
-    let stream_body = StreamBody::new(reader_stream.map_ok(Frame::data));
-    let boxed_body = stream_body.boxed();
+
+    let stream = if let Some(chunk) = first_chunk {
+        let c = futures_util::stream::once(async move { chunk });
+        c.chain(stream).left_stream()
+    } else {
+        // No first chunk, just use the remaining stream
+        stream.right_stream()
+    };
+
+    let stream_body = StreamBody::new(stream.map_ok(Frame::data));
+    let boxed_body = http_body_util::BodyExt::boxed(stream_body);
     Ok(resp.body(boxed_body).unwrap())
 }
 
