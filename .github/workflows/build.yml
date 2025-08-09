@@ -1,59 +1,117 @@
-name: Build
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      # Build and push 'latest' for main branch
-      - main
-    tags:
-      - '*' # Build and push tagged image for any tag
+name: 'Build + Push'
 
-# Cancel in progress jobs
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+on:
+  push:
+    branches: [ 'main' ]
+    tags: [ 'v*.*.*' ]
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-
-permissions:
-  contents: read
-  packages: write
+  IMAGE_NAME: ${{ github.repository }} # Sets image name to 'owner/repo'
 
 jobs:
+  # Build and Push Architecture-Specific Images
   build:
-    runs-on: ubuntu-24.04
+    name: Build on ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    
+    permissions:
+      contents: read
+      packages: write
+
     steps:
-      # https://github.com/orgs/community/discussions/25678
-      - name: Delete huge unnecessary tools folder
-        run: sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android /opt/ghc
- 
-      - name: Get a newer podman for heredoc support (from debian testing)
-        run: |
-          set -eux
-          echo 'deb [trusted=yes] https://ftp.debian.org/debian/ testing main' | sudo tee /etc/apt/sources.list.d/testing.list
-          sudo apt update
-          sudo apt install -y crun/testing podman/testing skopeo/testing
-          sudo rm /var/lib/containers -rf
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Login
-        # Use GITHUB_TOKEN to login to ghcr.io
-        run: podman login --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} ${{ env.REGISTRY }}
 
-      - name: Set image tag
-        id: set_image_tag
+      - name: Log in to the Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # This generates tags like 'latest', 'v1.2.3', 'v1.2', 'v1'
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push arch-specific image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          # Build and push only for the runner's native architecture
+          platforms: ${{ matrix.platform }}
+          # Push the image with a platform-specific suffix (e.g., '-amd64')
+          tags: |
+            ${{ steps.meta.outputs.tags }}-${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Use the GHA cache for faster builds
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Ensure the image is pushed
+          push: true
+
+  # Create and Push the Multi-Arch Manifest
+  push-manifest:
+    name: Push Multi-Arch Manifest
+    runs-on: ubuntu-latest
+    # This job depends on the successful completion of all jobs in the 'build' matrix
+    needs: [build]
+    # Only run this job for events that should trigger a push, not on PRs
+    if: github.event_name != 'pull_request'
+
+    permissions:
+      packages: write
+
+    steps:
+      - name: Log in to the Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Re-run metadata to get the same final tags (without the arch suffix)
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Create and push multi-arch manifest
         run: |
-          TAG="latest" # Default tag for workflow_dispatch or other branches
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG="${{ github.ref_name }}" # Use tag name for tag push
-          fi
-          echo "IMAGE_TAG=${TAG}" >> "$GITHUB_ENV"
-          echo "Building and pushing tag: ${TAG}"
-
-      - name: Build Image
-        id: build
-        run: podman build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} .
-      - name: Push
-        run: podman push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          # The 'tags' output from the metadata action can be multi-line, so we loop through it.
+          for tag in ${{ steps.meta.outputs.tags }}; do
+            echo "Processing tag: $tag"
+            docker manifest create "$tag" \
+              "${tag}-amd64" \
+              "${tag}-arm64"
+            docker manifest push "$tag"
+          done
