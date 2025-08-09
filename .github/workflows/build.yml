@@ -61,8 +61,6 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          # Build and push only for the runner's native architecture
-          platforms: ${{ matrix.platform }}
           # Push the image with a platform-specific suffix (e.g., '-amd64')
           tags: |
             ${{ steps.meta.outputs.tags }}-${{ matrix.arch }}
