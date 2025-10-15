@@ -417,7 +417,18 @@ async fn impl_response(
         tracing::debug!("Invalid method: {path}");
         return not_found();
     };
-    tracing::debug!("repository={repository}, method={method}, key={key}");
+    let user_agent = req
+        .headers()
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("<unknown>");
+    tracing::debug!(
+        repository = repository,
+        method = method,
+        key = key,
+        user_agent = user_agent,
+        "Request received"
+    );
     let r = match method {
         "manifests" => {
             let imgref = format!("{repository}:{key}");
