@@ -1,0 +1,41 @@
+# CI workflow - runs on PRs and pushes, validates container builds
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Containerfile'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'Makefile'
+      - '.github/workflows/ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-container:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup podman (newer version with heredoc support)
+        uses: bootc-dev/actions/bootc-ubuntu-setup@main
+
+      - name: Build container
+        run: podman build -t localhost/cstor-dist:test .
+
+      - name: Test container starts
+        run: |
+          podman run -d --name test-container -p 8000:8000 localhost/cstor-dist:test
+          sleep 2
+          podman logs test-container
+          podman stop test-container
